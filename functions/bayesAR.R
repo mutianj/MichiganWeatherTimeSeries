@@ -1,0 +1,124 @@
+############################################################
+## Functions used to transform phi to continuous support. ##
+logit     <- function(theta, a, b){log((theta-a)/(b-theta))}
+logit.inv <- function(z, a, b)    {b-(b-a)/(1+exp(z))}
+## Functions used to transform phi to continuous support. ##
+############################################################
+
+##########################################
+## Generates AR 2 autocovariance matrix ##
+genAR <- function(Phi, sig, n){
+  RhoVec    <- c(1)
+  RhoVec[2] <- Phi[1]/(1-Phi[2])
+  for(i in 3:n){RhoVec[i] <- Phi[1]*RhoVec[i-1] + Phi[2]*RhoVec[i-2]}
+  Rho <- Vec2Sym(RhoVec)
+  gamma.0 <- 1/(1-Phi[1]*RhoVec[2] - Phi[2]*RhoVec[3])*sig
+  ARcov <- gamma.0*Rho
+  return(ARcov)
+}
+## Generates AR 2 autocovariance matrix ##
+##########################################
+
+############################################
+## turns a vector into a symmetric matrix ##
+## Used inside genAR function             ##
+Vec2Sym <- function(Vec){
+  n <- length(Vec)
+  mat <- diag(1,n)
+  for(i in 1:n){
+    mat[i,i:n] <- Vec[1:(n-i+1)]
+    mat[n-i+1,1:(n-i+1)] <- Vec[(n-i+1):1]
+  }
+  return(mat)
+}
+## turns a vector into a symmetric matrix ##
+############################################
+
+############################################
+## function to block diagonalize a matrix ##
+## no longer used                         ##
+block.it <- function(mat, reps){
+  Dim <- dim(mat)*reps
+  output <- matrix(0, nrow = Dim[1], ncol = Dim[2])
+  for(i in 0:(reps-1)){
+    j <- dim(mat)[1] * i
+    output[1:dim(mat)[1] + j ,1:dim(mat)[1] + j ] <- mat
+  }
+  return(output)
+}
+## function to block diagonalize a matrix ##
+############################################
+
+###############################################
+## function to speed up likelihood           ##
+## calculation for multivariate time series' ##
+slam.it <- function(vec,mat){
+  t(vec)%*%mat%*%vec
+}
+###############################################
+
+
+##################################################
+##               AR(2) sampler                  ##
+## Y must be a matrix. If only one time series, ##
+## make sure Y is a one column matrix.          ##
+bayesAR <- function(Y, phi.1, phi.2, sig, a.sig = 2, b.sig = 1,
+                      phi.tune = .1, sig.tune = .1, iter = 1000){
+  start.time <- Sys.time()
+  ## set up initial values
+  acc <- 0
+  n <- nrow(Y)
+  mat <- matrix(NA, nrow = 3, ncol = iter)
+  mat[,1] <- c(phi.1,phi.2,sig)
+
+  ## calculate starting likelihood
+  C         <- genAR(Phi = c(phi.1,phi.2),n = n, sig = sig)
+  C.inv     <- chol2inv(chol(C))
+  C.det.log <- determinant(C, log = TRUE)$modulus[1]
+  C.det.log <- sum(rep(C.det.log, ncol(Y)))
+  oldlik    <- -.5*C.det.log - .5*(sum(apply(Y,2,slam.it, mat = C.inv)))
+
+  for(i in 1:iter){
+    ## propose new state
+    phi.1.tilde      <- logit(phi.1,-1,1)
+    phi.1.tilde.star <- rnorm(1, phi.1.tilde, phi.tune)
+    phi.1.star       <- logit.inv(phi.1.tilde.star,-1,1)
+
+    phi.2.upper      <- min(1 - phi.1.star, 1 + phi.1.star)
+    
+    phi.2.tilde      <- logit(phi.2,-1,phi.2.upper)
+    phi.2.tilde.star <- rnorm(1, phi.2.tilde, phi.tune)
+    phi.2.star       <- logit.inv(phi.2.tilde.star,-1,phi.2.upper)
+    
+    sig.tilde        <- log(sig) 
+    sig.tilde.star   <- rnorm(1, sig.tilde, sig.tune)
+    sig.star         <- exp(sig.tilde.star)
+
+    C         <- genAR(Phi = c(phi.1.star,phi.2.star),n = n, sig = sig.star)
+    C.inv     <- chol2inv(chol(C))
+    C.det.log <- determinant(C, log = TRUE)$modulus[1]
+    C.det.log <- sum(rep(C.det.log, ncol(Y)))
+    
+    lik <- (
+      -.5*C.det.log - .5*(sum(apply(Y,2,slam.it, mat = C.inv)))## Likelihood
+      - (a.sig+1)*log(sig.star) - b.sig/sig.star               ## sigma prior
+      + log(sig.star)                                          ## sigma Jacobian
+      + log(phi.1.star - (-1)) + log(1 - phi.1.star)           ## phi.1 Jacobian
+      + log(phi.2.star - (-1)) + log(phi.2.upper - phi.2.star) ## phi.2 Jacobian
+      )
+    accept <- min(0, lik - oldlik)
+    if(log(runif(1)) < accept){
+      phi.1  <- phi.1.star
+      phi.2  <- phi.2.star
+      sig    <- sig.star
+      oldlik <- lik
+      acc    <- acc+1
+    }  
+    mat[,i] <- c(phi.1,phi.2,sig)
+    print(acc/i)
+  }
+  print(Sys.time() - start.time)
+  return(mat)
+}
+##               AR(2) sampler                  ##
+##################################################
